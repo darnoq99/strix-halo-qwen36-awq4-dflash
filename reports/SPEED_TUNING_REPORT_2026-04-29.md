@@ -23,6 +23,19 @@ Key findings from current upstream/repo material:
 
 ## Local tested variants
 
+### AWQ4 without DFlash, full context
+
+This was measured as a clean single-server baseline with `Qwen3.6-27B-AWQ4`, `/v1/responses` streaming, `enable_thinking=false`, full `MAX_MODEL_LEN=262144`, and no `--speculative-config`.
+
+`max_num_seqs=3` failed to initialize twice with `EngineCore: -9`, so the measurable full-context baseline uses `max_num_seqs=1`.
+
+| test | input tok | output tok | elapsed | wall output t/s | notes |
+|---|---:|---:|---:|---:|---|
+| short stream | 26 | 18 | 7.016s | 2.57 | no DFlash |
+| medium stream | 2341 | 512 | 100.586s | 5.09 | no DFlash |
+| long stream | 26071 | 512 | 454.603s | 1.13 | no DFlash |
+| 3 parallel medium | 3x1499 | 1536 | 275.957s | 5.57 aggregate | queued by max_num_seqs=1 |
+
 ### Baseline stable, max_num_seqs=1, DFlash=8
 
 Streaming `/v1/responses`, `enable_thinking=false`:
@@ -68,6 +81,17 @@ Worse than N=8.
 | 3 parallel long generation | 6144 | 160.787s | 38.21 | 12.74-13.23 |
 
 DFlash=12 increased draft work and lowered effective acceptance. Rejected.
+
+### DFlash speedup over AWQ4-only
+
+| comparable test | no DFlash | DFlash=8 | speedup |
+|---|---:|---:|---:|
+| single short stream | 2.57 tok/s | 21.16 tok/s | 8.2x |
+| single medium stream | 5.09 tok/s | 11.42 tok/s | 2.2x |
+| single long stream | 1.13 tok/s | 1.25 tok/s | 1.1x |
+| 3 parallel medium aggregate | 5.57 tok/s | 24.39 tok/s | 4.4x |
+
+The most important agent-serving gain is not only per-request decode speed. DFlash also allowed the practical server configuration to run with `MAX_NUM_SEQS=3` at full context, while AWQ4-only failed at that concurrency on this stack.
 
 ## Final selected launcher
 

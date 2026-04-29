@@ -38,7 +38,7 @@ Single-request throughput did not reach 40-50 tok/s. On this machine, 40-50 tok/
 
 ## Benchmark Summary
 
-The main benchmark in this repository is the vLLM AWQ4 + DFlash path. Earlier Vulkan tests were also run on the same machine, but those used llama.cpp with GGUF models, not AWQ4+DFlash. Treat them as a backend/model-format comparison, not as an exact replacement for this vLLM setup.
+The benchmark section intentionally lists only `Qwen3.6-27B-AWQ4` results. Other local model-format measurements are not included here because they do not isolate the AWQ4+DFlash serving path.
 
 ### vLLM ROCm AWQ4 + DFlash
 
@@ -59,37 +59,22 @@ Endpoint path: `/v1/responses`, streaming, `enable_thinking=false`
 
 During the best 3-stream long-generation run, vLLM engine logs showed steady-state generation windows between `47.4` and `68.0 tok/s` aggregate. Wall-clock aggregate throughput was `43.90 tok/s` after HTTP/SSE/client overhead.
 
-### llama.cpp Vulkan RADV GGUF Comparison
+### vLLM ROCm AWQ4 Baseline Without DFlash
 
-These were earlier llama.cpp benchmarks on the same Strix Halo host. They are useful because they show Vulkan RADV can be very fast for GGUF, but they are not the same serving stack as vLLM AWQ4+DFlash.
+This baseline used a clean single-server run with the same `Qwen3.6-27B-AWQ4` target and the same request shapes, but without `--speculative-config`.
 
-Flags used: `-fa 1 -ngl 999 --no-mmap/-mmp 0 -b 512`, Vulkan RADV, usually `-ub 1024`.
+`max_num_seqs=3` with full `262144` context failed to initialize twice: vLLM reported `EngineCore: -9` during startup. The measured baseline therefore uses full context with `max_num_seqs=1`.
 
-| Model | Backend | Test | Prompt | Gen | Prompt tok/s | Gen tok/s |
-|---|---|---:|---:|---:|---:|---:|
-| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | short | 512 | 128 | 852.96 | 47.26 |
-| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | medium | 4096 | 256 | 797.68 | 46.30 |
-| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | long | 16384 | 256 | 804.97 | 54.58 |
-| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | agent-like | 8192 | 512 | 863.69 | 54.37 |
-| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | short | 512 | 128 | 813.67 | 39.76 |
-| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | medium | 4096 | 256 | 803.65 | 41.71 |
-| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | long | 16384 | 256 | 799.64 | 46.15 |
-| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | agent-like | 8192 | 512 | 856.00 | 46.12 |
-| Qwen3.6-27B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | agent-like | 8192 | 512 | 244.01 | 7.84 |
+| Variant | Input tokens | Output tokens | Elapsed | Output tok/s | Notes |
+|---|---:|---:|---:|---:|---|
+| Single short stream, no DFlash | 26 | 18 | 7.016s | 2.57 | full context, `max_num_seqs=1` |
+| Single medium stream, no DFlash | 2341 | 512 | 100.586s | 5.09 | full context, `max_num_seqs=1` |
+| Single long stream, no DFlash | 26071 | 512 | 454.603s | 1.13 | full context, `max_num_seqs=1` |
+| 3 parallel medium streams, no DFlash | 3 x 1499 | 1536 | 275.957s | 5.57 aggregate | effectively queued by `max_num_seqs=1` |
 
-The fastest llama.cpp Vulkan result was the 35B A3B Q6 GGUF path at about `54.4-54.8 tok/s` generation. That is faster than single-stream vLLM AWQ4+DFlash, but it is a different model format, different server stack, and does not include DFlash speculative decoding or the same multimodal/tooling behavior.
+On the comparable single-medium case, DFlash improved wall-clock decode from `5.09 tok/s` to `11.42 tok/s`. On the 3-stream medium case, DFlash with `max_num_seqs=3` improved aggregate throughput from `5.57 tok/s` to `24.39 tok/s`.
 
-### llama.cpp ROCm GGUF Comparison
-
-For reference, upstream llama.cpp ROCm/HIP also ran on the same host:
-
-| Model | Backend | Test | Prompt | Gen | Prompt tok/s | Gen tok/s |
-|---|---|---:|---:|---:|---:|---:|
-| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp ROCm | agent-like | 8192 | 512 | 843.86 | 46.09 |
-| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp ROCm | agent-like | 8192 | 512 | 958.21 | 44.01 |
-| Qwen3.6-27B-UD-Q6_K_XL.gguf | llama.cpp ROCm | agent-like | 8192 | 512 | 308.62 | 8.27 |
-
-For GGUF, Vulkan RADV beat upstream ROCm/HIP in the most important 35B A3B generation tests. For AWQ4+DFlash, the tested implementation path is vLLM ROCm.
+Raw baseline output is in `benchmarks/awq4_no_dflash_baseline_results.jsonl`.
 
 ### Vulkan + DFlash Feasibility Test
 
@@ -98,7 +83,7 @@ Question tested: can DFlash run on Vulkan instead of ROCm?
 Short answer:
 
 - `AWQ4 + DFlash` as used here is a vLLM ROCm path. I did not find a vLLM Vulkan backend for this stack.
-- A separate `GGUF target + GGUF DFlash drafter + llama.cpp Vulkan` path exists experimentally through `spiritbuun/buun-llama-cpp`, but it did not pass the local smoke test on Strix Halo/RADV.
+- A separate `GGUF target + GGUF DFlash drafter + llama.cpp Vulkan` path exists experimentally through `spiritbuun/buun-llama-cpp`, but upstream support is CUDA-oriented and the Vulkan path is incomplete on Strix Halo/RADV.
 
 What was tested:
 
@@ -113,19 +98,30 @@ Result:
 ```text
 Target model loaded on Vulkan RADV.
 DFlash drafter loaded on Vulkan RADV.
-Generation crashed before producing tokens:
+Initial generation crashed before producing tokens:
 ggml_get_n_tasks: op not implemented: SSM_CONV_TREE
 fatal error in ggml_graph_plan
 ```
 
-Conclusion: Vulkan+DFlash GGUF is promising enough to revisit, but it is not currently a working replacement for the ROCm AWQ4+DFlash endpoint on this machine. The stable production path remains vLLM ROCm AWQ4+DFlash.
+Debug result after local CPU fallbacks for `SSM_CONV_TREE` and `GATED_DELTA_NET_TREE`:
+
+```text
+Smoke test completed without abort.
+decoded 33 tokens in 16.254s = 2.03 tok/s
+accept = 1.25%
+output quality: bad; repeated <think> fragments and non-consecutive token warnings
+```
+
+Conclusion: Vulkan+DFlash is not a usable replacement for the ROCm AWQ4+DFlash endpoint. It needs native Vulkan implementations for the DFlash tree ops and more state/position debugging before it is worth benchmarking seriously.
 
 ## Repository Contents
 
 ```text
 scripts/run_best_awq4_dflash_server.sh
+scripts/run_awq4_no_dflash_baseline_server.sh
 benchmarks/stream_bench.py
 benchmarks/stream_tuning_results.jsonl
+benchmarks/awq4_no_dflash_baseline_results.jsonl
 benchmarks/vulkan_dflash_smoke_2026-04-29.md
 reports/SPEED_TUNING_REPORT_2026-04-29.md
 .env.example

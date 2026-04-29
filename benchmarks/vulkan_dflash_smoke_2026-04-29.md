@@ -6,7 +6,16 @@ This test checked whether a Vulkan path can replace the ROCm vLLM AWQ4+DFlash en
 
 ## Summary
 
-`AWQ4 + DFlash` is currently a vLLM ROCm setup in this repository. A separate experimental `GGUF + DFlash + Vulkan` path exists through `spiritbuun/buun-llama-cpp`, but it did not complete a local smoke test on Strix Halo / RADV.
+`AWQ4 + DFlash` is currently a vLLM ROCm setup in this repository. I did not find a vLLM Vulkan backend or a llama.cpp Vulkan fork with native support for the DFlash tree ops needed here.
+
+A separate experimental `GGUF + DFlash + Vulkan` path exists through `spiritbuun/buun-llama-cpp`, but upstream/public usage is CUDA-oriented. On Strix Halo / RADV it required local CPU fallbacks for missing tree ops and still was not usable.
+
+Sources checked:
+
+- `ggml-org/llama.cpp` PR `#22105`: DFlash support draft, CUDA-oriented implementation.
+- `spiritbuun/buun-llama-cpp`: fork used by the GGUF drafter model card.
+- `spiritbuun/Qwen3.6-27B-DFlash-GGUF`: model card recommends `GGML_CUDA=ON`.
+- `Ardenzard/Qwen3.6-27B-DFlash-GGUF`: independent GGUF packaging also points at `buun-llama-cpp`.
 
 ## Tested Stack
 
@@ -40,7 +49,7 @@ llama-speculative-simple \
   -p "Write a Python function that computes Fibonacci iteratively. Output code only."
 ```
 
-## Result
+## Initial Result
 
 The target and drafter both loaded on Vulkan RADV, but generation crashed before producing benchmarkable output.
 
@@ -55,6 +64,34 @@ fatal error
 timeout: the monitored command dumped core
 ```
 
+## Local Debug Patch Result
+
+I added local CPU fallbacks for:
+
+- `GGML_OP_SSM_CONV_TREE`
+- `GGML_OP_GATED_DELTA_NET_TREE`
+
+After rebuilding, the smoke test completed without aborting. It was not a viable inference path:
+
+```text
+decoded   33 tokens in   16.254 seconds, speed:    2.030 t/s
+n_draft   = 8
+n_predict = 33
+n_drafted = 240
+n_accept  = 3
+accept    = 1.250%
+```
+
+The output contained repeated `<think>` fragments and repeated warnings:
+
+```text
+find_slot: non-consecutive token position ... after 12 for sequence 0 with 9 new tokens
+```
+
+So the local fallbacks prove that the first crash is caused by missing tree-op support, but they do not make Vulkan+DFlash production-ready.
+
 ## Conclusion
 
 Vulkan+DFlash GGUF is not a working replacement yet on this Strix Halo/RADV setup. The stable tested endpoint remains vLLM ROCm AWQ4+DFlash.
+
+Making this useful would require native Vulkan kernels at least for `SSM_CONV_TREE` and `GATED_DELTA_NET_TREE`, plus fixing the tree verification/state-position warnings.
