@@ -73,7 +73,7 @@ DFlash=12 increased draft work and lowered effective acceptance. Rejected.
 
 Path:
 
-`/mnt/bigdrive/strix-qwen36-vllm-awq4-qwen/run_best_awq4_dflash_server.sh`
+`/data/qwen36-awq4-dflash/vllm-awq4-qwen/run_best_awq4_dflash_server.sh`
 
 Defaults now set to:
 
@@ -108,11 +108,11 @@ Expected realistic throughput:
 
 Base URL wired/LAN:
 
-`http://192.168.50.136:18141/v1`
+`http://YOUR_HOST_OR_IP:18141/v1`
 
 Base URL Wi-Fi/LAN:
 
-`http://192.168.50.85:18141/v1`
+`http://YOUR_HOST_OR_IP:18141/v1`
 
 Model:
 

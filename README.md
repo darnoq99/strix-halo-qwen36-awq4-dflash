@@ -36,12 +36,97 @@ reasoning chars: 0
 
 Single-request throughput did not reach 40-50 tok/s. On this machine, 40-50 tok/s was reached as aggregate throughput with three concurrent streams.
 
+## Benchmark Summary
+
+The main benchmark in this repository is the vLLM AWQ4 + DFlash path. Earlier Vulkan tests were also run on the same machine, but those used llama.cpp with GGUF models, not AWQ4+DFlash. Treat them as a backend/model-format comparison, not as an exact replacement for this vLLM setup.
+
+### vLLM ROCm AWQ4 + DFlash
+
+Target model: `cyankiwi/Qwen3.6-27B-AWQ-INT4`
+
+Drafter: `z-lab/Qwen3.6-27B-DFlash`
+
+Endpoint path: `/v1/responses`, streaming, `enable_thinking=false`
+
+| Variant | Input tokens | Output tokens | Elapsed | Output tok/s | Notes |
+|---|---:|---:|---:|---:|---|
+| Single short stream | 26 | 18 | 0.851s | 21.16 | TTFT 0.03s |
+| Single medium stream | 2341 | 512 | 44.853s | 11.42 | zero reasoning chars |
+| Single long stream | 26071 | 512 | 409.600s | 1.25 | long prompt path remains poor |
+| 3 parallel medium streams, `max_num_seqs=3` | 3 x 1499 | 1536 | 62.968s | 24.39 aggregate | 8.13-8.38 tok/s per stream |
+| 3 parallel long generations, `max_num_seqs=3` | 3 x 1087 | 5924 | 134.946s | 43.90 aggregate | 14.32-15.34 tok/s per stream |
+| 3 parallel long generations, DFlash `N=12` | 3 x 1087 | 6144 | 160.787s | 38.21 aggregate | worse than `N=8` |
+
+During the best 3-stream long-generation run, vLLM engine logs showed steady-state generation windows between `47.4` and `68.0 tok/s` aggregate. Wall-clock aggregate throughput was `43.90 tok/s` after HTTP/SSE/client overhead.
+
+### llama.cpp Vulkan RADV GGUF Comparison
+
+These were earlier llama.cpp benchmarks on the same Strix Halo host. They are useful because they show Vulkan RADV can be very fast for GGUF, but they are not the same serving stack as vLLM AWQ4+DFlash.
+
+Flags used: `-fa 1 -ngl 999 --no-mmap/-mmp 0 -b 512`, Vulkan RADV, usually `-ub 1024`.
+
+| Model | Backend | Test | Prompt | Gen | Prompt tok/s | Gen tok/s |
+|---|---|---:|---:|---:|---:|---:|
+| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | short | 512 | 128 | 852.96 | 47.26 |
+| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | medium | 4096 | 256 | 797.68 | 46.30 |
+| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | long | 16384 | 256 | 804.97 | 54.58 |
+| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | agent-like | 8192 | 512 | 863.69 | 54.37 |
+| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | short | 512 | 128 | 813.67 | 39.76 |
+| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | medium | 4096 | 256 | 803.65 | 41.71 |
+| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | long | 16384 | 256 | 799.64 | 46.15 |
+| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp Vulkan RADV | agent-like | 8192 | 512 | 856.00 | 46.12 |
+| Qwen3.6-27B-UD-Q6_K_XL.gguf | llama.cpp Vulkan RADV | agent-like | 8192 | 512 | 244.01 | 7.84 |
+
+The fastest llama.cpp Vulkan result was the 35B A3B Q6 GGUF path at about `54.4-54.8 tok/s` generation. That is faster than single-stream vLLM AWQ4+DFlash, but it is a different model format, different server stack, and does not include DFlash speculative decoding or the same multimodal/tooling behavior.
+
+### llama.cpp ROCm GGUF Comparison
+
+For reference, upstream llama.cpp ROCm/HIP also ran on the same host:
+
+| Model | Backend | Test | Prompt | Gen | Prompt tok/s | Gen tok/s |
+|---|---|---:|---:|---:|---:|---:|
+| Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf | llama.cpp ROCm | agent-like | 8192 | 512 | 843.86 | 46.09 |
+| Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf | llama.cpp ROCm | agent-like | 8192 | 512 | 958.21 | 44.01 |
+| Qwen3.6-27B-UD-Q6_K_XL.gguf | llama.cpp ROCm | agent-like | 8192 | 512 | 308.62 | 8.27 |
+
+For GGUF, Vulkan RADV beat upstream ROCm/HIP in the most important 35B A3B generation tests. For AWQ4+DFlash, the tested implementation path is vLLM ROCm.
+
+### Vulkan + DFlash Feasibility Test
+
+Question tested: can DFlash run on Vulkan instead of ROCm?
+
+Short answer:
+
+- `AWQ4 + DFlash` as used here is a vLLM ROCm path. I did not find a vLLM Vulkan backend for this stack.
+- A separate `GGUF target + GGUF DFlash drafter + llama.cpp Vulkan` path exists experimentally through `spiritbuun/buun-llama-cpp`, but it did not pass the local smoke test on Strix Halo/RADV.
+
+What was tested:
+
+- Fork: `spiritbuun/buun-llama-cpp`
+- Build: `-DGGML_VULKAN=ON`
+- Target: `Qwen3.6-27B-UD-Q6_K_XL.gguf`
+- Drafter: `spiritbuun/Qwen3.6-27B-DFlash-GGUF`, `dflash-draft-3.6-q8_0.gguf`
+- Command shape: `llama-speculative-simple -m TARGET -md DRAFT --spec-type dflash -ngl 999 -ngld 999 --no-mmap -fa on`
+
+Result:
+
+```text
+Target model loaded on Vulkan RADV.
+DFlash drafter loaded on Vulkan RADV.
+Generation crashed before producing tokens:
+ggml_get_n_tasks: op not implemented: SSM_CONV_TREE
+fatal error in ggml_graph_plan
+```
+
+Conclusion: Vulkan+DFlash GGUF is promising enough to revisit, but it is not currently a working replacement for the ROCm AWQ4+DFlash endpoint on this machine. The stable production path remains vLLM ROCm AWQ4+DFlash.
+
 ## Repository Contents
 
 ```text
 scripts/run_best_awq4_dflash_server.sh
 benchmarks/stream_bench.py
 benchmarks/stream_tuning_results.jsonl
+benchmarks/vulkan_dflash_smoke_2026-04-29.md
 reports/SPEED_TUNING_REPORT_2026-04-29.md
 .env.example
 ```
@@ -50,21 +135,21 @@ reports/SPEED_TUNING_REPORT_2026-04-29.md
 
 These steps assume Fedora or another Linux host with working Strix Halo ROCm device access through `/dev/kfd` and `/dev/dri`, plus Podman.
 
-Use a large disk. The examples use `/mnt/bigdrive`.
+Use a large disk. The examples use `/data/qwen36-awq4-dflash`. Replace it with any large local path.
 
 ### 1. Create work directories
 
 ```bash
-mkdir -p /mnt/bigdrive/strix-qwen36-vllm-awq4-qwen
-mkdir -p /mnt/bigdrive/strix-qwen36-vllm-dflash/models
+mkdir -p /data/qwen36-awq4-dflash
+mkdir -p /data/qwen36-awq4-dflash/models
 ```
 
 ### 2. Clone and build the Strix Halo vLLM container
 
 ```bash
-cd /mnt/bigdrive
-git clone https://github.com/hec-ovi/vllm-awq4-qwen strix-qwen36-vllm-awq4-qwen
-cd /mnt/bigdrive/strix-qwen36-vllm-awq4-qwen
+cd /data/qwen36-awq4-dflash
+git clone https://github.com/hec-ovi/vllm-awq4-qwen vllm-awq4-qwen
+cd /data/qwen36-awq4-dflash/vllm-awq4-qwen
 podman build -t localhost/vllm-awq4-qwen:builder .
 ```
 
@@ -81,7 +166,7 @@ python3 -m pip install --user -U huggingface_hub hf_xet
 Download the AWQ4 target model:
 
 ```bash
-HF_HOME=/mnt/bigdrive/strix-qwen36-vllm-awq4-qwen/models \
+HF_HOME=/data/qwen36-awq4-dflash/vllm-awq4-qwen/models \
 huggingface-cli download cyankiwi/Qwen3.6-27B-AWQ-INT4
 ```
 
@@ -89,7 +174,7 @@ Download the DFlash drafter:
 
 ```bash
 huggingface-cli download z-lab/Qwen3.6-27B-DFlash \
-  --local-dir /mnt/bigdrive/strix-qwen36-vllm-dflash/models/Qwen3.6-27B-DFlash \
+  --local-dir /data/qwen36-awq4-dflash/models/Qwen3.6-27B-DFlash \
   --local-dir-use-symlinks False
 ```
 
@@ -113,16 +198,16 @@ Minimum variables:
 
 ```bash
 export API_KEY=change-me
-export VLLM_AWQ4_ROOT=/mnt/bigdrive/strix-qwen36-vllm-awq4-qwen
-export DFLASH_DIR=/mnt/bigdrive/strix-qwen36-vllm-dflash/models/Qwen3.6-27B-DFlash
+export VLLM_AWQ4_ROOT=/data/qwen36-awq4-dflash/vllm-awq4-qwen
+export DFLASH_DIR=/data/qwen36-awq4-dflash/models/Qwen3.6-27B-DFlash
 ```
 
 ### 5. Start the server
 
 ```bash
 API_KEY=change-me \
-VLLM_AWQ4_ROOT=/mnt/bigdrive/strix-qwen36-vllm-awq4-qwen \
-DFLASH_DIR=/mnt/bigdrive/strix-qwen36-vllm-dflash/models/Qwen3.6-27B-DFlash \
+VLLM_AWQ4_ROOT=/data/qwen36-awq4-dflash/vllm-awq4-qwen \
+DFLASH_DIR=/data/qwen36-awq4-dflash/models/Qwen3.6-27B-DFlash \
 ./scripts/run_best_awq4_dflash_server.sh
 ```
 
@@ -201,4 +286,3 @@ benchmarks/stream_tuning_results.jsonl
 ## Security
 
 No API keys or Hugging Face tokens are committed. Replace every `change-me` value locally.
-
